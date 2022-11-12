@@ -1,8 +1,8 @@
+use std::error::Error;
 use clap::{arg, ArgAction, Command, command, value_parser};
-use httpautomate::errors::AutomateError;
 use httpautomate::execute::execute_http_files;
 
-fn main() -> Result<(), AutomateError> {
+fn main() -> Result<(), Box<dyn Error>> {
     let cmd = Command::new("httpmate")
         .author(clap::crate_authors!())
         .version(clap::crate_version!())
