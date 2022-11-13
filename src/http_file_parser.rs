@@ -1,18 +1,9 @@
-use std::error::Error;
+use anyhow::{anyhow, Result};
+use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::path::PathBuf;
 use std::io::{BufRead, BufReader};
-use crate::errors::{FileIoError};
-
-#[derive(Debug)]
-pub struct HttpRequest {
-    request_no: u32,
-    name: String,
-    url: String,
-    headers: Vec<String>,
-    body: Vec<String>,
-    options: Vec<String>,
-}
+use crate::http_request::HttpRequest;
 
 // Represents state as determined by the latest parsed line
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -22,7 +13,13 @@ enum ParseState {
     Uri,
     Header,
     AfterHeaders,
-    Body
+    Body,
+}
+
+impl Display for ParseState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 // Determined type of line based of latest parse state
@@ -33,6 +30,12 @@ enum LineType {
     Comment,
     Empty,
     Unknown,
+}
+
+impl Display for LineType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 fn parse_url(line: String) -> String {
@@ -57,9 +60,9 @@ fn get_line_type(line: &String) -> LineType {
     };
 }
 
-pub fn parse_http_file(http_file_path: PathBuf) -> Result<Vec<HttpRequest>, Box<dyn Error>> {
+pub fn parse_http_file(http_file_path: PathBuf) -> Result<Vec<HttpRequest>> {
     let file = match File::open(&http_file_path) {
-        Err(reason) => return Err(Box::new(FileIoError(format!("couldn't open {}: {}", http_file_path.display(), reason)))),
+        Err(reason) => return Err(anyhow!(format!("couldn't open {}: {}", http_file_path.display(), reason))),
         Ok(file) => file,
     };
 
@@ -71,7 +74,7 @@ pub fn parse_http_file(http_file_path: PathBuf) -> Result<Vec<HttpRequest>, Box<
 
     let buf_reader = BufReader::new(file);
 
-    let mut name: String;
+    let mut name: String = "".to_string();
     let mut url = "".to_string();
     let mut headers: Vec<String> = Vec::new();
     let mut body: Vec<String> = Vec::new();
@@ -94,7 +97,7 @@ pub fn parse_http_file(http_file_path: PathBuf) -> Result<Vec<HttpRequest>, Box<
             } else if parse_state == ParseState::Body {
                 body.push(line.clone());
             } else {
-                panic!("Unknown state {:?}/{:?} in line {}", parse_state, line_type, line_no)
+                return Err(anyhow!(format!("Unhandled state {}/{} in line {}", parse_state, line_type, line_no)));
             }
         } else if line_type == LineType::Empty {
             if parse_state == ParseState::Header {
@@ -104,31 +107,31 @@ pub fn parse_http_file(http_file_path: PathBuf) -> Result<Vec<HttpRequest>, Box<
             }
         } else if line_type == LineType::NewRequest {
             // TODO FR repeated requests?
-            name = parse_name(line);
-
-            if url.is_empty() && parse_state == ParseState::Unknown {
+            if url.is_empty() {
                 // the very first time it might be a initial marker
+                name = parse_name(line);
                 parse_state = ParseState::NewRequest;
-                continue;
-            }
-            parse_state = ParseState::NewRequest;
+            } else {
+                http_requests.push(
+                    HttpRequest {
+                        request_no,
+                        name: name.clone(),
+                        unresolved_url: url.clone(),
+                        unresolved_headers: headers.clone(),
+                        unresolved_body: body.clone(),
+                        options: options.clone(),
+                    }
+                );
+                name.clear();
+                url.clear();
+                headers.clear();
+                body.clear();
+                options.clear();
+                request_no += 1;
 
-            http_requests.push(
-                HttpRequest {
-                    request_no,
-                    name: name.clone(),
-                    url: url.clone(),
-                    headers: headers.clone(),
-                    body: body.clone(),
-                    options: options.clone()
-                }
-            );
-            name.clear();
-            url.clear();
-            headers.clear();
-            body.clear();
-            options.clear();
-            request_no += 1;
+                name = parse_name(line);
+                parse_state = ParseState::NewRequest;
+            }
         } else if line_type == LineType::ConfigOption {
             options.push(line.clone())
         } else if line_type == LineType::Comment {
