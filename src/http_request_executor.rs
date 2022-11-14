@@ -1,9 +1,75 @@
-use crate::http_request::HttpRequest;
+use std::collections::HashMap;
+
 use anyhow::{anyhow, Result};
 use reqwest::header::{HeaderName, HeaderValue};
+use rhai::{Dynamic, ImmutableString};
 
-pub struct ExecutionContext<'a> {
-    pub client: &'a reqwest::blocking::Client,
+use crate::http_request::HttpRequest;
+
+#[derive(Clone)]
+pub struct VariableStorage {
+    storage: HashMap<ImmutableString, ImmutableString>,
+}
+
+impl VariableStorage {
+    fn new() -> VariableStorage {
+        return VariableStorage { storage: HashMap::new() };
+    }
+    fn set(&mut self, name: ImmutableString, value: ImmutableString) {
+        self.storage.insert(name, value);
+    }
+    fn get(&self, name: &ImmutableString) -> &ImmutableString {
+        return self.storage.get(name).unwrap();
+    }
+    fn is_empty(&self) -> bool {
+        return self.storage.is_empty();
+    }
+    fn clear(&mut self, name: &ImmutableString) {
+        self.storage.remove(name);
+    }
+    fn clear_all(&mut self) {
+        self.storage.clear();
+    }
+}
+
+pub struct ExecutionContext {
+    pub client: reqwest::blocking::Client,
+    scope: rhai::Scope<'static>,
+    engine: rhai::Engine,
+    pub var_storage: VariableStorage,
+}
+
+impl ExecutionContext {
+    fn initialize_engine(context: &mut ExecutionContext) {
+        context.engine.register_type_with_name::<VariableStorage>("VariableStorage")
+            .register_fn("get", VariableStorage::get)
+            .register_fn("set", VariableStorage::set)
+            .register_fn("isEmpty", VariableStorage::is_empty)
+            .register_fn("clear", VariableStorage::clear)
+            .register_fn("clearAll", VariableStorage::clear_all);
+    }
+
+    pub fn new() -> Result<ExecutionContext> {
+        let client = reqwest::blocking::Client::builder()
+            .http1_title_case_headers()
+            .build()
+            .map_err(|e| anyhow!("{:?}", e))?;
+        let engine = rhai::Engine::new();
+        let var_storage = VariableStorage::new();
+        let scope = rhai::Scope::new();
+        let mut context = ExecutionContext { client, scope, engine, var_storage };
+        ExecutionContext::initialize_engine(&mut context);
+        // context.eval("let x = 4")?;
+        // println!("{}", context.eval("x + 6")?);
+        return Ok(context);
+    }
+
+    pub fn eval(&mut self, script: &str) -> Result<Dynamic> {
+        return match self.engine.eval_with_scope::<Dynamic>(&mut self.scope, script) {
+            Ok(value) => Ok(value),
+            Err(err) => Err(anyhow!("{:?}", err)),
+        }
+    }
 }
 
 impl HttpRequest {
@@ -71,10 +137,10 @@ impl HttpRequest {
 
 pub fn execute_http_request(
     http_request: &HttpRequest,
-    context: &ExecutionContext<'_>,
+    context: &ExecutionContext,
 ) -> Result<()> {
     println!("{}", http_request.name());
-    let client = context.client;
+    let client = &context.client;
     let req = client
         .request(http_request.method()?, http_request.uri()?)
         .headers(http_request.headers()?)
