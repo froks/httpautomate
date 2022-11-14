@@ -1,9 +1,9 @@
+use crate::http_request::HttpRequest;
 use anyhow::{anyhow, Result};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
-use std::path::PathBuf;
 use std::io::{BufRead, BufReader};
-use crate::http_request::HttpRequest;
+use std::path::PathBuf;
 
 // Represents state as determined by the latest parsed line
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -62,7 +62,13 @@ fn get_line_type(line: &String) -> LineType {
 
 pub fn parse_http_file(http_file_path: PathBuf) -> Result<Vec<HttpRequest>> {
     let file = match File::open(&http_file_path) {
-        Err(reason) => return Err(anyhow!(format!("couldn't open {}: {}", http_file_path.display(), reason))),
+        Err(reason) => {
+            return Err(anyhow!(format!(
+                "couldn't open {}: {}",
+                http_file_path.display(),
+                reason
+            )))
+        }
         Ok(file) => file,
     };
 
@@ -97,7 +103,10 @@ pub fn parse_http_file(http_file_path: PathBuf) -> Result<Vec<HttpRequest>> {
             } else if parse_state == ParseState::Body {
                 body.push(line.clone());
             } else {
-                return Err(anyhow!(format!("Unhandled state {}/{} in line {}", parse_state, line_type, line_no)));
+                return Err(anyhow!(format!(
+                    "Unhandled state {}/{} in line {}",
+                    parse_state, line_type, line_no
+                )));
             }
         } else if line_type == LineType::Empty {
             if parse_state == ParseState::Header {
@@ -112,16 +121,14 @@ pub fn parse_http_file(http_file_path: PathBuf) -> Result<Vec<HttpRequest>> {
                 name = parse_name(line);
                 parse_state = ParseState::NewRequest;
             } else {
-                http_requests.push(
-                    HttpRequest {
-                        request_no,
-                        name: name.clone(),
-                        unresolved_url: url.clone(),
-                        unresolved_headers: headers.clone(),
-                        unresolved_body: body.clone(),
-                        options: options.clone(),
-                    }
-                );
+                http_requests.push(HttpRequest {
+                    request_no,
+                    name: name.clone(),
+                    unresolved_url: url.clone(),
+                    unresolved_headers: headers.clone(),
+                    unresolved_body: body.clone(),
+                    options: options.clone(),
+                });
                 name.clear();
                 url.clear();
                 headers.clear();
