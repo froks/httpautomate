@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug,Default)]
 pub struct HttpRequest {
     pub request_no: u32,
     pub name: String,
