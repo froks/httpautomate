@@ -7,4 +7,3 @@ pub struct HttpRequest {
     pub unresolved_body: Vec<String>,
     pub options: Vec<String>,
 }
-
