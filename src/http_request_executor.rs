@@ -1,10 +1,15 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use anyhow::{anyhow, Result};
-use regex::{Regex};
+use chrono::SecondsFormat;
+use rand::Rng;
+use regex::Regex;
 use reqwest::header::{HeaderName, HeaderValue};
-use rhai::{Dynamic};
+use rhai::Dynamic;
 
 use crate::http_request::HttpRequest;
 
@@ -19,13 +24,45 @@ impl VariableStorage {
             storage: HashMap::new(),
         };
     }
-    fn set(&mut self, name: String, value: String) {
-        self.storage.insert(name, value);
+    fn set(&mut self, name: &String, value: &String) {
+        self.storage.insert(name.clone(), value.clone());
+    }
+    fn get_dynamic(&self, name: &str) -> Option<String> {
+        return if name == "$uuid" || name == "$random.uuid" {
+            let uuid = uuid::Uuid::new_v4();
+            Some(uuid.to_string())
+        } else if name == "$randomInt" {
+            let mut rng = rand::thread_rng();
+            Some(rng.gen_range(0..1000).to_string())
+        } else if name == "$timestamp" {
+            Some(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .to_string(),
+            )
+        } else if name == "$isoTimestamp" {
+            let now: chrono::DateTime<chrono::Utc> = SystemTime::now().into();
+            Some(now.to_rfc3339_opts(SecondsFormat::Nanos, true))
+        } else {
+            None
+        };
     }
     fn get(&self, name: &String) -> String {
-        return self.storage.get(name).unwrap_or(name).to_string();
+        if name.starts_with("$") {
+            return self.get_dynamic(name).unwrap();
+        }
+        return self
+            .storage
+            .get(name)
+            .unwrap_or(&"".to_string())
+            .to_string();
     }
     fn contains(&self, name: &str) -> bool {
+        if name.starts_with("$") {
+            return self.get_dynamic(name).is_some();
+        }
         return self.storage.contains_key(name);
     }
     fn is_empty(&self) -> bool {
@@ -49,16 +86,24 @@ pub struct ExecutionContext<'a> {
 type VariableStorageAPI = Arc<Mutex<VariableStorage>>;
 
 impl ExecutionContext<'_> {
-    pub fn new() -> Result<ExecutionContext<'static>> {
+    pub fn new(
+        env_files: Vec<&PathBuf>,
+        environment: &String,
+    ) -> Result<ExecutionContext<'static>> {
         let client = reqwest::blocking::Client::builder()
             .http1_title_case_headers()
             .build()
             .map_err(|e| anyhow!("{:?}", e))?;
-        // rhai::config::hashing::set_ahash_seed(Some([123, 456, 789, 42])).unwrap();
+
         let mut engine = rhai::Engine::new();
         let mut scope: rhai::Scope<'static> = rhai::Scope::new();
-        let storage = Arc::new(Mutex::new(VariableStorage::new()));
-
+        let mut variable_storage = VariableStorage::new();
+        ExecutionContext::fill_storage_by_environment(
+            &mut variable_storage,
+            env_files,
+            environment,
+        );
+        let storage = Arc::new(Mutex::new(variable_storage));
         let api = storage.clone();
         scope.push_constant("Storage", api);
         engine.register_type_with_name::<VariableStorageAPI>("StorageType");
@@ -66,7 +111,7 @@ impl ExecutionContext<'_> {
             "set",
             |api: &mut VariableStorageAPI, key: String, value: String| {
                 let mut storage = api.lock().unwrap();
-                storage.set(key, value);
+                storage.set(&key, &value);
             },
         );
         engine.register_fn("get", |api: &mut VariableStorageAPI, key: String| {
@@ -86,12 +131,31 @@ impl ExecutionContext<'_> {
             client,
             engine,
             scope,
-            storage
+            storage,
         };
         let init_script_bytes = include_bytes!("rhai/init_scope.rhai");
         let init_script = std::str::from_utf8(&init_script_bytes.as_slice()).unwrap();
         context.eval(init_script)?;
         return Ok(context);
+    }
+
+    fn fill_storage_by_environment(
+        storage: &mut VariableStorage,
+        env_files: Vec<&PathBuf>,
+        environment: &String,
+    ) {
+        env_files.iter().for_each(|file| {
+            let file =
+                fs::File::open(file).expect(format!("error while opening {:?}", &file).as_str());
+            let json: serde_json::Value = serde_json::from_reader(&file)
+                .expect(format!("can't parse {:?} as json", &file).as_str());
+            let env_data = &json[environment.as_str()];
+            if !env_data.is_null() {
+                env_data.as_object().unwrap().iter().for_each(|entry| {
+                    storage.set(entry.0, &entry.1.as_str().unwrap_or("").to_string());
+                })
+            }
+        });
     }
 
     pub fn eval(&mut self, script: &str) -> Result<Dynamic> {
@@ -111,7 +175,7 @@ pub trait ReplaceTemplates {
 
 impl ReplaceTemplates for str {
     fn replace_templates(&self, templates: &VariableStorage) -> String {
-        let r = Regex::new(r"\{\{(\w+)+}}").unwrap();
+        let r = Regex::new(r"\{\{([$\w]+)}}").unwrap();
 
         let mut result = self.clone().to_string();
         r.captures_iter(self).for_each(|cap| {
@@ -165,14 +229,20 @@ impl HttpRequest {
         };
     }
 
-    pub fn headers(&self, execution_context: &ExecutionContext) -> Result<reqwest::header::HeaderMap> {
+    pub fn headers(
+        &self,
+        execution_context: &ExecutionContext,
+    ) -> Result<reqwest::header::HeaderMap> {
         let mut map = reqwest::header::HeaderMap::new();
         self.unresolved_headers
             .iter()
             .map(|it| it.split_once(":").unwrap())
             .map(|(key, value)| {
-                let header_name = key.replace_templates(&execution_context.storage.lock().unwrap()).trim().to_string();
-                let header_value = value.replace_templates(&execution_context.storage.lock().unwrap()).trim().to_string();
+                let header_name = key.trim().to_string();
+                let header_value = value
+                    .replace_templates(&execution_context.storage.lock().unwrap())
+                    .trim()
+                    .to_string();
                 (
                     HeaderName::try_from(header_name).unwrap(),
                     HeaderValue::try_from(header_value).unwrap(),
@@ -184,9 +254,14 @@ impl HttpRequest {
         return Ok(map);
     }
 
-    pub fn body(&self) -> Result<String> {
+    pub fn body(&self, execution_context: &ExecutionContext) -> Result<String> {
         // TODO FR resolve body if function
-        return Ok(self.unresolved_body.join("\n"));
+        return Ok(self
+            .unresolved_body
+            .iter()
+            .map(|it| it.replace_templates(&execution_context.storage.lock().unwrap()))
+            .collect::<Vec<String>>()
+            .join("\n"));
     }
 }
 
@@ -196,7 +271,7 @@ pub fn execute_http_request(http_request: &HttpRequest, context: &ExecutionConte
     let req = client
         .request(http_request.method()?, http_request.uri(context)?)
         .headers(http_request.headers(context)?)
-        .body(http_request.body()?);
+        .body(http_request.body(context)?);
 
     // println!("{}", req.body());
     let res = req.send().unwrap();

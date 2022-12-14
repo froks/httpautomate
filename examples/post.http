@@ -37,6 +37,7 @@ Content-Type: application/json
   "id": {{$uuid}},
   "price": {{$randomInt}},
   "ts": {{$timestamp}},
+  "utcTs": {{$isoTimestamp}},
   "value": "content"
 }
 

@@ -1,10 +1,10 @@
 let client = #{
     global: #{
         set: |key,value| Storage.set(key, value),
-        get: |key| Storage_get(key),
-        isEmpty: || this.storage.is_empty(),
-        clear: |key| this.storage.clear(key),
-        clearAll: || this.storage.clear_all(),
+        get: |key| Storage.get(key),
+        isEmpty: || Storage.is_empty(),
+        clear: |key| Storage.clear(key),
+        clearAll: || Storage.clear_all(),
     },
 };
 
