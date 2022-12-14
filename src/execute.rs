@@ -1,7 +1,7 @@
 use crate::http_file_parser::parse_http_file;
+use crate::http_request_executor::ExecutionContext;
 use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
-use crate::http_request_executor::ExecutionContext;
 
 pub fn execute_http_files(files: Vec<&PathBuf>) -> Result<()> {
     let context = ExecutionContext::new()?;
